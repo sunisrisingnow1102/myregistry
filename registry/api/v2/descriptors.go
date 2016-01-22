@@ -135,7 +135,7 @@ const (
    "tag": <tag>,
    "fsLayers": [
       {
-         "blobSum": <tarsum>
+         "blobSum": "<digest>"
       },
       ...
     ]
@@ -389,6 +389,96 @@ var routeDescriptors = []RouteDescriptor{
 		},
 	},
 	{
+		Name:        RouteNameIndex,
+		Path:        "/v2/index",
+		Entity:      "Index",
+		Description: `Index service for registry V2.`,
+		Methods: []MethodDescriptor{
+			{
+				Method:      "GET",
+				Description: "Search images in the registry.",
+				Requests: []RequestDescriptor{
+					{
+						Headers: []ParameterDescriptor{
+							hostHeader,
+							authHeader,
+						},
+						Successes: []ResponseDescriptor{
+							{
+								Description: "The API implements V2 protocol and is accessible.",
+								StatusCode:  http.StatusOK,
+							},
+						},
+						Failures: []ResponseDescriptor{
+							{
+								Description: "The client is not authorized to access the registry.",
+								StatusCode:  http.StatusUnauthorized,
+								Headers: []ParameterDescriptor{
+									authChallengeHeader,
+								},
+								Body: BodyDescriptor{
+									ContentType: "application/json; charset=utf-8",
+									Format:      errorsBody,
+								},
+								ErrorCodes: []ErrorCode{
+									ErrorCodeUnauthorized,
+								},
+							},
+							{
+								Description: "The registry does not implement the V2 API.",
+								StatusCode:  http.StatusNotFound,
+							},
+						},
+					},
+				},
+			},
+			{
+				Method:      "OPTIONS",
+				Description: "Check if it's cSphere modified version.",
+				Requests: []RequestDescriptor{
+					{
+						Headers: []ParameterDescriptor{
+							hostHeader,
+							authHeader,
+						},
+						Successes: []ResponseDescriptor{
+							{
+								Description: "cSphere version",
+								StatusCode:  http.StatusOK,
+							},
+						},
+						Failures: []ResponseDescriptor{},
+					},
+				},
+			},
+		},
+	},
+	{
+		Name: RouteNameTagStatus,
+		Path: "/v2/{name:" + RepositoryNameRegexp.String() + "}/status",
+		Methods: []MethodDescriptor{
+			{
+				Method:      "PATCH",
+				Description: "Set the status of the image tag.",
+				Requests: []RequestDescriptor{
+					{
+						Headers: []ParameterDescriptor{
+							hostHeader,
+							authHeader,
+						},
+						Successes: []ResponseDescriptor{
+							{
+								Description: "Set image tag status succeeded.",
+								StatusCode:  http.StatusOK,
+							},
+						},
+						Failures: []ResponseDescriptor{},
+					},
+				},
+			},
+		},
+	},
+	{
 		Name:        RouteNameTags,
 		Path:        "/v2/{name:" + RepositoryNameRegexp.String() + "}/tags/list",
 		Entity:      "Tags",
@@ -606,7 +696,7 @@ var routeDescriptors = []RouteDescriptor{
             "code": "BLOB_UNKNOWN",
             "message": "blob unknown to registry",
             "detail": {
-                "digest": <tarsum>
+                "digest": "<digest>"
             }
         },
         ...
@@ -712,7 +802,7 @@ var routeDescriptors = []RouteDescriptor{
 		Name:        RouteNameBlob,
 		Path:        "/v2/{name:" + RepositoryNameRegexp.String() + "}/blobs/{digest:" + digest.DigestRegexp.String() + "}",
 		Entity:      "Blob",
-		Description: "Fetch the blob identified by `name` and `digest`. Used to fetch layers by tarsum digest.",
+		Description: "Fetch the blob identified by `name` and `digest`. Used to fetch layers by digest.",
 		Methods: []MethodDescriptor{
 
 			{
@@ -898,7 +988,7 @@ var routeDescriptors = []RouteDescriptor{
 							{
 								Name:        "digest",
 								Type:        "query",
-								Format:      "<tarsum>",
+								Format:      "<digest>",
 								Regexp:      digest.DigestRegexp,
 								Description: `Digest of uploaded blob. If present, the upload will be completed, in a single request, with contents of the request body as the resulting blob.`,
 							},
@@ -1055,7 +1145,74 @@ var routeDescriptors = []RouteDescriptor{
 				Description: "Upload a chunk of data for the specified upload.",
 				Requests: []RequestDescriptor{
 					{
-						Description: "Upload a chunk of data to specified upload without completing the upload.",
+						Name:        "Stream upload",
+						Description: "Upload a stream of data to upload without completing the upload.",
+						PathParameters: []ParameterDescriptor{
+							nameParameterDescriptor,
+							uuidParameterDescriptor,
+						},
+						Headers: []ParameterDescriptor{
+							hostHeader,
+							authHeader,
+						},
+						Body: BodyDescriptor{
+							ContentType: "application/octet-stream",
+							Format:      "<binary data>",
+						},
+						Successes: []ResponseDescriptor{
+							{
+								Name:        "Data Accepted",
+								Description: "The stream of data has been accepted and the current progress is available in the range header. The updated upload location is available in the `Location` header.",
+								StatusCode:  http.StatusNoContent,
+								Headers: []ParameterDescriptor{
+									{
+										Name:        "Location",
+										Type:        "url",
+										Format:      "/v2/<name>/blobs/uploads/<uuid>",
+										Description: "The location of the upload. Clients should assume this changes after each request. Clients should use the contents verbatim to complete the upload, adding parameters where required.",
+									},
+									{
+										Name:        "Range",
+										Type:        "header",
+										Format:      "0-<offset>",
+										Description: "Range indicating the current progress of the upload.",
+									},
+									contentLengthZeroHeader,
+									dockerUploadUUIDHeader,
+								},
+							},
+						},
+						Failures: []ResponseDescriptor{
+							{
+								Description: "There was an error processing the upload and it must be restarted.",
+								StatusCode:  http.StatusBadRequest,
+								ErrorCodes: []ErrorCode{
+									ErrorCodeDigestInvalid,
+									ErrorCodeNameInvalid,
+									ErrorCodeBlobUploadInvalid,
+								},
+								Body: BodyDescriptor{
+									ContentType: "application/json; charset=utf-8",
+									Format:      errorsBody,
+								},
+							},
+							unauthorizedResponsePush,
+							{
+								Description: "The upload is unknown to the registry. The upload must be restarted.",
+								StatusCode:  http.StatusNotFound,
+								ErrorCodes: []ErrorCode{
+									ErrorCodeBlobUploadUnknown,
+								},
+								Body: BodyDescriptor{
+									ContentType: "application/json; charset=utf-8",
+									Format:      errorsBody,
+								},
+							},
+						},
+					},
+					{
+						Name:        "Chunked upload",
+						Description: "Upload a chunk of data to specified upload without completing the upload. The data will be uploaded to the specified Content Range.",
 						PathParameters: []ParameterDescriptor{
 							nameParameterDescriptor,
 							uuidParameterDescriptor,
@@ -1143,26 +1300,15 @@ var routeDescriptors = []RouteDescriptor{
 				Description: "Complete the upload specified by `uuid`, optionally appending the body as the final chunk.",
 				Requests: []RequestDescriptor{
 					{
-						// TODO(stevvooe): Break this down into three separate requests:
-						// 	1. Complete an upload where all data has already been sent.
-						// 	2. Complete an upload where the entire body is in the PUT.
-						// 	3. Complete an upload where the final, partial chunk is the body.
-
-						Description: "Complete the upload, providing the _final_ chunk of data, if necessary. This method may take a body with all the data. If the `Content-Range` header is specified, it may include the final chunk. A request without a body will just complete the upload with previously uploaded content.",
+						Description: "Complete the upload, providing all the data in the body, if necessary. A request without a body will just complete the upload with previously uploaded content.",
 						Headers: []ParameterDescriptor{
 							hostHeader,
 							authHeader,
 							{
-								Name:        "Content-Range",
-								Type:        "header",
-								Format:      "<start of range>-<end of range, inclusive>",
-								Description: "Range of bytes identifying the block of content represented by the body. Start must the end offset retrieved via status check plus one. Note that this is a non-standard use of the `Content-Range` header. May be omitted if no data is provided.",
-							},
-							{
 								Name:        "Content-Length",
 								Type:        "integer",
-								Format:      "<length of chunk>",
-								Description: "Length of the chunk being uploaded, corresponding to the length of the request body. May be zero if no data is provided.",
+								Format:      "<length of data>",
+								Description: "Length of the data being uploaded, corresponding to the length of the request body. May be zero if no data is provided.",
 							},
 						},
 						PathParameters: []ParameterDescriptor{
@@ -1173,7 +1319,7 @@ var routeDescriptors = []RouteDescriptor{
 							{
 								Name:        "digest",
 								Type:        "string",
-								Format:      "<tarsum>",
+								Format:      "<digest>",
 								Regexp:      digest.DigestRegexp,
 								Required:    true,
 								Description: `Digest of uploaded blob.`,
@@ -1181,7 +1327,7 @@ var routeDescriptors = []RouteDescriptor{
 						},
 						Body: BodyDescriptor{
 							ContentType: "application/octet-stream",
-							Format:      "<binary chunk>",
+							Format:      "<binary data>",
 						},
 						Successes: []ResponseDescriptor{
 							{
@@ -1230,24 +1376,6 @@ var routeDescriptors = []RouteDescriptor{
 								Body: BodyDescriptor{
 									ContentType: "application/json; charset=utf-8",
 									Format:      errorsBody,
-								},
-							},
-							{
-								Description: "The `Content-Range` specification cannot be accepted, either because it does not overlap with the current progress or it is invalid. The contents of the `Range` header may be used to resolve the condition.",
-								StatusCode:  http.StatusRequestedRangeNotSatisfiable,
-								Headers: []ParameterDescriptor{
-									{
-										Name:        "Location",
-										Type:        "url",
-										Format:      "/v2/<name>/blobs/uploads/<uuid>",
-										Description: "The location of the upload. Clients should assume this changes after each request. Clients should use the contents verbatim to complete the upload, adding parameters where required.",
-									},
-									{
-										Name:        "Range",
-										Type:        "header",
-										Format:      "0-<offset>",
-										Description: "Range indicating the current progress of the upload.",
-									},
 								},
 							},
 						},

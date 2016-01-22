@@ -4,7 +4,7 @@ import (
 	"net/http"
 
 	"github.com/docker/distribution"
-	ctxu "github.com/docker/distribution/context"
+	"github.com/docker/distribution/context"
 	"github.com/docker/distribution/digest"
 	"github.com/docker/distribution/registry/api/v2"
 	"github.com/gorilla/handlers"
@@ -14,7 +14,6 @@ import (
 func layerDispatcher(ctx *Context, r *http.Request) http.Handler {
 	dgst, err := getDigest(ctx)
 	if err != nil {
-
 		if err == errDigestNotAvailable {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNotFound)
@@ -33,8 +32,9 @@ func layerDispatcher(ctx *Context, r *http.Request) http.Handler {
 	}
 
 	return handlers.MethodHandler{
-		"GET":  http.HandlerFunc(layerHandler.GetLayer),
-		"HEAD": http.HandlerFunc(layerHandler.GetLayer),
+		"GET":    http.HandlerFunc(layerHandler.GetLayer),
+		"HEAD":   http.HandlerFunc(layerHandler.GetLayer),
+		"DELETE": http.HandlerFunc(layerHandler.DeleteLayer),
 	}
 }
 
@@ -48,7 +48,7 @@ type layerHandler struct {
 // GetLayer fetches the binary data from backend storage returns it in the
 // response.
 func (lh *layerHandler) GetLayer(w http.ResponseWriter, r *http.Request) {
-	ctxu.GetLogger(lh).Debug("GetImageLayer")
+	context.GetLogger(lh).Debug("GetLayer")
 	layers := lh.Repository.Layers()
 	layer, err := layers.Fetch(lh.Digest)
 
@@ -65,10 +65,31 @@ func (lh *layerHandler) GetLayer(w http.ResponseWriter, r *http.Request) {
 
 	handler, err := layer.Handler(r)
 	if err != nil {
-		ctxu.GetLogger(lh).Debugf("unexpected error getting layer HTTP handler: %s", err)
+		context.GetLogger(lh).Debugf("unexpected error getting layer HTTP handler: %s", err)
 		lh.Errors.Push(v2.ErrorCodeUnknown, err)
 		return
 	}
 
 	handler.ServeHTTP(w, r)
+}
+
+// DeleteLayer performs a soft delete of a layer blob
+func (lh *layerHandler) DeleteLayer(w http.ResponseWriter, r *http.Request) {
+	context.GetLogger(lh).Debug("DeleteLayer")
+
+	layerStore := lh.Repository.Layers()
+	err := layerStore.Delete(lh.Digest)
+	if err != nil {
+		switch err := err.(type) {
+		case distribution.ErrUnknownLayer:
+			w.WriteHeader(http.StatusNotFound)
+			lh.Errors.Push(v2.ErrorCodeBlobUnknown, err.FSLayer)
+		default:
+			lh.Errors.Push(v2.ErrorCodeUnknown, err)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusAccepted)
 }

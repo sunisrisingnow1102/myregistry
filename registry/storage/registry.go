@@ -20,10 +20,11 @@ type registry struct {
 // NewRegistryWithDriver creates a new registry instance from the provided
 // driver. The resulting registry may be shared by multiple goroutines but is
 // cheap to allocate.
-func NewRegistryWithDriver(driver storagedriver.StorageDriver, layerInfoCache cache.LayerInfoCache) distribution.Namespace {
+func NewRegistryWithDriver(ctx context.Context, driver storagedriver.StorageDriver, layerInfoCache cache.LayerInfoCache) distribution.Namespace {
 	bs := &blobStore{
 		driver: driver,
 		pm:     defaultPathMapper,
+		ctx:    ctx,
 	}
 
 	return &registry{
@@ -80,6 +81,10 @@ func (repo *repository) Manifests() distribution.ManifestService {
 		repository: repo,
 		revisionStore: &revisionStore{
 			repository: repo,
+			tomb: tombstone{
+				pm:     defaultPathMapper,
+				driver: repo.driver,
+			},
 		},
 		tagStore: &tagStore{
 			repository: repo,
@@ -93,6 +98,10 @@ func (repo *repository) Manifests() distribution.ManifestService {
 func (repo *repository) Layers() distribution.LayerService {
 	ls := &layerStore{
 		repository: repo,
+		tomb: tombstone{
+			pm:     defaultPathMapper,
+			driver: repo.driver,
+		},
 	}
 
 	if repo.registry.layerInfoCache != nil {

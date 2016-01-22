@@ -93,7 +93,7 @@ func TestURLPrefix(t *testing.T) {
 
 }
 
-// TestLayerAPI conducts a full of the of the layer api.
+// TestLayerAPI conducts a full test of the of the layer api.
 func TestLayerAPI(t *testing.T) {
 	// TODO(stevvooe): This test code is complete junk but it should cover the
 	// complete flow. This must be broken down and checked against the
@@ -209,6 +209,13 @@ func TestLayerAPI(t *testing.T) {
 	uploadURLBase, uploadUUID = startPushLayer(t, env.builder, imageName)
 	pushLayer(t, env.builder, imageName, layerDigest, uploadURLBase, layerFile)
 
+	// ------------------------------------------
+	// Now, push just a chunk
+	layerFile.Seek(0, 0)
+
+	uploadURLBase, uploadUUID = startPushLayer(t, env.builder, imageName)
+	uploadURLBase, dgst := pushChunk(t, env.builder, imageName, uploadURLBase, layerFile, layerLength)
+	finishUpload(t, env.builder, imageName, uploadURLBase, dgst)
 	// ------------------------
 	// Use a head request to see if the layer exists.
 	resp, err = http.Head(layerURL)
@@ -246,9 +253,93 @@ func TestLayerAPI(t *testing.T) {
 		t.Fatalf("response body did not pass verification")
 	}
 
+	// ----------------
+	// Fetch the layer with an invalid digest
+	badURL := strings.Replace(layerURL, "tarsum", "trsum", 1)
+	resp, err = http.Get(badURL)
+	if err != nil {
+		t.Fatalf("unexpected error fetching layer: %v", err)
+	}
+
+	checkResponse(t, "fetching layer bad digest", resp, http.StatusBadRequest)
+
 	// Missing tests:
 	// 	- Upload the same tarsum file under and different repository and
 	//       ensure the content remains uncorrupted.
+
+	// ---------------
+	// Delete a layer
+	resp, err = httpDelete(layerURL)
+	if err != nil {
+		t.Fatalf("unexpected error deleting layer: %v", err)
+	}
+
+	checkResponse(t, "deleting layer", resp, http.StatusAccepted)
+	checkHeaders(t, resp, http.Header{
+		"Content-Length": []string{"0"},
+	})
+
+	// ---------------
+	// Try and get it back
+	// Use a head request to see if the layer exists.
+	resp, err = http.Head(layerURL)
+	if err != nil {
+		t.Fatalf("unexpected error checking head on existing layer: %v", err)
+	}
+
+	checkResponse(t, "checking existence of deleted layer", resp, http.StatusNotFound)
+
+	// ----------------
+	// Delete already deleted layer
+	resp, err = httpDelete(layerURL)
+	if err != nil {
+		t.Fatalf("unexpected error deleting layer: %v", err)
+	}
+
+	checkResponse(t, "deleting layer", resp, http.StatusNotFound)
+
+	// ----------------
+	// Attempt to delete a layer with an invalid digest
+	resp, err = httpDelete(badURL)
+	if err != nil {
+		t.Fatalf("unexpected error fetching layer: %v", err)
+	}
+
+	checkResponse(t, "deleting layer bad digest", resp, http.StatusBadRequest)
+
+	// ----------------
+	// Reupload previously deleted blob
+	layerFile.Seek(0, os.SEEK_SET)
+
+	uploadURLBase, uploadUUID = startPushLayer(t, env.builder, imageName)
+	pushLayer(t, env.builder, imageName, layerDigest, uploadURLBase, layerFile)
+
+	// ------------------------
+	// Use a head request to see if it exists
+	resp, err = http.Head(layerURL)
+	if err != nil {
+		t.Fatalf("unexpected error checking head on existing layer: %v", err)
+	}
+
+	checkResponse(t, "checking head on reuploaded layer", resp, http.StatusOK)
+	checkHeaders(t, resp, http.Header{
+		"Content-Length":        []string{fmt.Sprint(layerLength)},
+		"Docker-Content-Digest": []string{layerDigest.String()},
+	})
+}
+
+func httpDelete(url string) (*http.Response, error) {
+	req, err := http.NewRequest("DELETE", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	return resp, err
 }
 
 func TestManifestAPI(t *testing.T) {
@@ -448,6 +539,61 @@ func TestManifestAPI(t *testing.T) {
 	if tagsResponse.Tags[0] != tag {
 		t.Fatalf("tag not as expected: %q != %q", tagsResponse.Tags[0], tag)
 	}
+
+	// ---------------
+	// Delete by digest
+	resp, err = httpDelete(manifestDigestURL)
+	checkErr(t, err, "deleting manifest by digest")
+
+	checkResponse(t, "deleting manifest", resp, http.StatusAccepted)
+	checkHeaders(t, resp, http.Header{
+		"Content-Length": []string{"0"},
+	})
+
+	// ---------------
+	// Attempt to fetch deleted digest
+	resp, err = http.Get(manifestDigestURL)
+	checkErr(t, err, "fetching deleted manifest by digest")
+	defer resp.Body.Close()
+
+	checkResponse(t, "fetching deleted manifest", resp, http.StatusNotFound)
+
+	// ---------------
+	// Delete already deleted digest
+	resp, err = httpDelete(manifestDigestURL)
+	checkErr(t, err, "deleting manifest by digest")
+
+	checkResponse(t, "deleting manifest", resp, http.StatusNotFound)
+
+	// --------------------
+	// Re-upload manifest by digest
+	resp = putManifest(t, "putting signed manifest", manifestDigestURL, signedManifest)
+	checkResponse(t, "putting signed manifest", resp, http.StatusAccepted)
+	checkHeaders(t, resp, http.Header{
+		"Location":              []string{manifestDigestURL},
+		"Docker-Content-Digest": []string{dgst.String()},
+	})
+
+	// ---------------
+	// Attempt to fetch re-uploaded deleted digest
+	resp, err = http.Get(manifestDigestURL)
+	checkErr(t, err, "fetching re-uploaded manifest by digest")
+	defer resp.Body.Close()
+
+	checkResponse(t, "fetching re-uploaded manifest", resp, http.StatusOK)
+	checkHeaders(t, resp, http.Header{
+		"Docker-Content-Digest": []string{dgst.String()},
+	})
+
+	// ---------------
+	// Attempt to delete an unknown manifest
+	unknownDigest := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	unknownManifestDigestURL, err := env.builder.BuildManifestURL(imageName, unknownDigest)
+	checkErr(t, err, "building unknown manifest url")
+
+	resp, err = httpDelete(unknownManifestDigestURL)
+	checkErr(t, err, "delting unknown manifest by digest")
+	checkResponse(t, "fetching deleted manifest", resp, http.StatusNotFound)
 }
 
 type testEnv struct {
@@ -606,6 +752,75 @@ func pushLayer(t *testing.T, ub *v2.URLBuilder, name string, dgst digest.Digest,
 	return resp.Header.Get("Location")
 }
 
+func finishUpload(t *testing.T, ub *v2.URLBuilder, name string, uploadURLBase string, dgst digest.Digest) string {
+	resp, err := doPushLayer(t, ub, name, dgst, uploadURLBase, nil)
+	if err != nil {
+		t.Fatalf("unexpected error doing push layer request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	checkResponse(t, "putting monolithic chunk", resp, http.StatusCreated)
+
+	expectedLayerURL, err := ub.BuildBlobURL(name, dgst)
+	if err != nil {
+		t.Fatalf("error building expected layer url: %v", err)
+	}
+
+	checkHeaders(t, resp, http.Header{
+		"Location":              []string{expectedLayerURL},
+		"Content-Length":        []string{"0"},
+		"Docker-Content-Digest": []string{dgst.String()},
+	})
+
+	return resp.Header.Get("Location")
+}
+
+func doPushChunk(t *testing.T, uploadURLBase string, body io.Reader) (*http.Response, digest.Digest, error) {
+	u, err := url.Parse(uploadURLBase)
+	if err != nil {
+		t.Fatalf("unexpected error parsing pushLayer url: %v", err)
+	}
+
+	u.RawQuery = url.Values{
+		"_state": u.Query()["_state"],
+	}.Encode()
+
+	uploadURL := u.String()
+
+	digester := digest.NewCanonicalDigester()
+
+	req, err := http.NewRequest("PATCH", uploadURL, io.TeeReader(body, digester))
+	if err != nil {
+		t.Fatalf("unexpected error creating new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+
+	return resp, digester.Digest(), err
+}
+
+func pushChunk(t *testing.T, ub *v2.URLBuilder, name string, uploadURLBase string, body io.Reader, length int64) (string, digest.Digest) {
+	resp, dgst, err := doPushChunk(t, uploadURLBase, body)
+	if err != nil {
+		t.Fatalf("unexpected error doing push layer request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	checkResponse(t, "putting chunk", resp, http.StatusAccepted)
+
+	if err != nil {
+		t.Fatalf("error generating sha256 digest of body")
+	}
+
+	checkHeaders(t, resp, http.Header{
+		"Range":          []string{fmt.Sprintf("0-%d", length-1)},
+		"Content-Length": []string{"0"},
+	})
+
+	return resp.Header.Get("Location"), dgst
+}
+
 func checkResponse(t *testing.T, msg string, resp *http.Response, expectedStatus int) {
 	if resp.StatusCode != expectedStatus {
 		t.Logf("unexpected status %s: %v != %v", msg, resp.StatusCode, expectedStatus)
@@ -693,7 +908,7 @@ func checkHeaders(t *testing.T, resp *http.Response, headers http.Header) {
 
 			for _, hv := range resp.Header[k] {
 				if hv != v {
-					t.Fatalf("%v header value not matched in response: %q != %q", k, hv, v)
+					t.Fatalf("%+v %v header value not matched in response: %q != %q", resp.Header, k, hv, v)
 				}
 			}
 		}

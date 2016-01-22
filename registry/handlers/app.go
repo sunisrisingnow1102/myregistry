@@ -15,6 +15,7 @@ import (
 	"github.com/docker/distribution/notifications"
 	"github.com/docker/distribution/registry/api/v2"
 	"github.com/docker/distribution/registry/auth"
+	"github.com/docker/distribution/registry/index"
 	registrymiddleware "github.com/docker/distribution/registry/middleware/registry"
 	repositorymiddleware "github.com/docker/distribution/registry/middleware/repository"
 	"github.com/docker/distribution/registry/storage"
@@ -47,6 +48,7 @@ type App struct {
 	}
 
 	redis *redis.Pool
+	index *index.IndexService
 }
 
 // NewApp takes a configuration and returns a configured app, ready to serve
@@ -70,10 +72,11 @@ func NewApp(ctx context.Context, configuration configuration.Configuration) *App
 	app.register(v2.RouteNameBlob, layerDispatcher)
 	app.register(v2.RouteNameBlobUpload, layerUploadDispatcher)
 	app.register(v2.RouteNameBlobUploadChunk, layerUploadDispatcher)
+	app.register(v2.RouteNameIndex, indexDispatcher)
+	app.register(v2.RouteNameTagStatus, tagStatusDispatcher)
 
 	var err error
 	app.driver, err = factory.Create(configuration.Storage.Type(), configuration.Storage.Parameters())
-
 	if err != nil {
 		// TODO(stevvooe): Move the creation of a service into a protected
 		// method, where this is created lazily. Its status can be queried via
@@ -92,13 +95,14 @@ func NewApp(ctx context.Context, configuration configuration.Configuration) *App
 
 	}
 
-	startUploadPurger(app.driver, ctxu.GetLogger(app), purgeConfig)
+	startUploadPurger(app, app.driver, ctxu.GetLogger(app), purgeConfig)
 
 	app.driver, err = applyStorageMiddleware(app.driver, configuration.Middleware["storage"])
 	if err != nil {
 		panic(err)
 	}
 
+	app.configureIndex(&configuration)
 	app.configureEvents(&configuration)
 	app.configureRedis(&configuration)
 
@@ -109,10 +113,10 @@ func NewApp(ctx context.Context, configuration configuration.Configuration) *App
 			if app.redis == nil {
 				panic("redis configuration required to use for layerinfo cache")
 			}
-			app.registry = storage.NewRegistryWithDriver(app.driver, cache.NewRedisLayerInfoCache(app.redis))
+			app.registry = storage.NewRegistryWithDriver(app, app.driver, cache.NewRedisLayerInfoCache(app.redis))
 			ctxu.GetLogger(app).Infof("using redis layerinfo cache")
 		case "inmemory":
-			app.registry = storage.NewRegistryWithDriver(app.driver, cache.NewInMemoryLayerInfoCache())
+			app.registry = storage.NewRegistryWithDriver(app, app.driver, cache.NewInMemoryLayerInfoCache())
 			ctxu.GetLogger(app).Infof("using inmemory layerinfo cache")
 		default:
 			if cc["layerinfo"] != "" {
@@ -123,7 +127,7 @@ func NewApp(ctx context.Context, configuration configuration.Configuration) *App
 
 	if app.registry == nil {
 		// configure the registry if no cache section is available.
-		app.registry = storage.NewRegistryWithDriver(app.driver, nil)
+		app.registry = storage.NewRegistryWithDriver(app.Context, app.driver, nil)
 	}
 
 	app.registry, err = applyRegistryMiddleware(app.registry, configuration.Middleware["registry"])
@@ -158,6 +162,14 @@ func (app *App) register(routeName string, dispatch dispatchFunc) {
 	app.router.GetRoute(routeName).Handler(app.dispatcher(dispatch))
 }
 
+func (app *App) configureIndex(configuration *configuration.Configuration) {
+	var err error
+	app.index, err = index.New(configuration)
+	if err != nil {
+		ctxu.GetLogger(app).Error("index service configuration failed: ", err.Error())
+	}
+}
+
 // configureEvents prepares the event sink for action.
 func (app *App) configureEvents(configuration *configuration.Configuration) {
 	// Configure all of the endpoint sinks.
@@ -177,6 +189,10 @@ func (app *App) configureEvents(configuration *configuration.Configuration) {
 		})
 
 		sinks = append(sinks, endpoint)
+	}
+
+	if app.index != nil {
+		sinks = append(sinks, app.index.Sink())
 	}
 
 	// NOTE(stevvooe): Moving to a new queueing implementation is as easy as
@@ -365,7 +381,6 @@ func (app *App) dispatcher(dispatch dispatchFunc) http.Handler {
 		}
 
 		dispatch(context, r).ServeHTTP(w, r)
-
 		// Automated error response handling here. Handlers may return their
 		// own errors if they need different behavior (such as range errors
 		// for layer upload).
@@ -492,7 +507,12 @@ func (app *App) eventBridge(ctx *Context, r *http.Request) notifications.Listene
 // nameRequired returns true if the route requires a name.
 func (app *App) nameRequired(r *http.Request) bool {
 	route := mux.CurrentRoute(r)
-	return route == nil || route.GetName() != v2.RouteNameBase
+	if route == nil {
+		return true
+	}
+
+	routeName := route.GetName()
+	return routeName != v2.RouteNameBase && routeName != v2.RouteNameIndex
 }
 
 // apiBase implements a simple yes-man for doing overall checks against the
@@ -597,7 +617,7 @@ func badPurgeUploadConfig(reason string) {
 
 // startUploadPurger schedules a goroutine which will periodically
 // check upload directories for old files and delete them
-func startUploadPurger(storageDriver storagedriver.StorageDriver, log ctxu.Logger, config map[interface{}]interface{}) {
+func startUploadPurger(ctx context.Context, storageDriver storagedriver.StorageDriver, log ctxu.Logger, config map[interface{}]interface{}) {
 	if config["enabled"] == false {
 		return
 	}
@@ -652,7 +672,7 @@ func startUploadPurger(storageDriver storagedriver.StorageDriver, log ctxu.Logge
 		time.Sleep(jitter)
 
 		for {
-			storage.PurgeUploads(storageDriver, time.Now().Add(-purgeAgeDuration), !dryRunBool)
+			storage.PurgeUploads(ctx, storageDriver, time.Now().Add(-purgeAgeDuration), !dryRunBool)
 			log.Infof("Starting upload purge in %s", intervalDuration)
 			time.Sleep(intervalDuration)
 		}

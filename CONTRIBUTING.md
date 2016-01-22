@@ -49,7 +49,7 @@ Then immediately submit this new file as a pull-request, in order to get early f
 
 Eventually, you will have to update your proposal to accommodate the feedback you received.
 
-Usually, it's not advisable to start working too much on the implementation itself before the proposal receives sufficient feedback, since it can significantly altered (or rejected).
+Usually, it's not advisable to start working too much on the implementation itself before the proposal receives sufficient feedback, since it can be significantly altered (or rejected).
 
 Your implementation should then be submitted as a separate PR, that will be reviewed as well.
 
@@ -90,11 +90,11 @@ PR titles should be lowercased, except for proper noun references (such a
 method name or type).
 
 PR titles should be prefixed with affected directories, comma separated. For
-example, if a specification is modified, the prefix would be "doc/spec". If
+example, if a specification is modified, the prefix would be "docs/spec". If
 the modifications are only in the root, do not include it. If multiple
 directories are modified, include each, separated by a comma and space.
 
 Here are some examples:
 
-- doc/spec: move API specification into correct position
+- docs/spec: move API specification into correct position
 - context, registry, auth, auth/token, cmd/registry: context aware logging

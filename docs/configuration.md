@@ -1,6 +1,8 @@
+<!--GITHUB
 page_title: Configure a Registry
 page_description: Explains how to deploy a registry 
 page_keywords: registry, service, images, repository
+IGNORES-->
 
 
 # Registry Configuration Reference
@@ -148,6 +150,12 @@ REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY=/tmp/registry/test
 
 This variable overrides the `/tmp/registry` value to the `/tmp/registry/test`
 directory.
+
+>**Note**: If an environment variable changes a map value into a string, such
+>as replacing the storage driver type with `REGISTRY_STORAGE=filesystem`, then
+>all sub-fields will be erased. As such, specifying the storage type in the
+>environment will remove all parameters related to the old storage
+>configuration.
 
 
 ## version 
