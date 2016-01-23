@@ -434,7 +434,7 @@ var routeDescriptors = []RouteDescriptor{
 			},
 			{
 				Method:      "OPTIONS",
-				Description: "Check if it's cSphere modified version.",
+				Description: "Check if it's jinriSoft modified version.",
 				Requests: []RequestDescriptor{
 					{
 						Headers: []ParameterDescriptor{
@@ -443,7 +443,7 @@ var routeDescriptors = []RouteDescriptor{
 						},
 						Successes: []ResponseDescriptor{
 							{
-								Description: "cSphere version",
+								Description: "jinriSoft version",
 								StatusCode:  http.StatusOK,
 							},
 						},

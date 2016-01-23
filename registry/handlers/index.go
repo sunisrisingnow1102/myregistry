@@ -17,7 +17,7 @@ func indexDispatcher(ctx *Context, r *http.Request) http.Handler {
 
 	return handlers.MethodHandler{
 		"GET":     http.HandlerFunc(indexHandler.GetPage),
-		"OPTIONS": http.HandlerFunc(indexHandler.AnnounceCsphere),
+		"OPTIONS": http.HandlerFunc(indexHandler.AnnounceJinrisoft),
 	}
 }
 
@@ -51,7 +51,7 @@ func (ih *indexHandler) GetPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (ih *indexHandler) AnnounceCsphere(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("cSphere", "true")
+func (ih *indexHandler) AnnounceJinrisoft(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("jinriSoft", "true")
 	w.WriteHeader(200)
 }
